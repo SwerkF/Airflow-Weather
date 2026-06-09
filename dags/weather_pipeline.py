@@ -1,24 +1,28 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.empty import EmptyOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime
 import requests
-import json
 import logging
-import os
 
 logger = logging.getLogger(__name__)
 
+POSTGRES_CONN_ID = "postgres_weather"
+
 CITIES = {
-    "paris": {"lat": 48.8566, "lon": 2.3522},
-    "tokyo": {"lat": 35.6762, "lon": 139.6503},
+    "paris":    {"lat": 48.8566, "lon": 2.3522},
+    "tokyo":    {"lat": 35.6762, "lon": 139.6503},
     "new_york": {"lat": 40.7128, "lon": -74.0060},
 }
 
-OUTPUT_DIR = "/tmp/weather_pipeline"
-
 
 def fetch_weather(city, lat, lon, **context):
+    active_cities = context["params"].get("cities", list(CITIES.keys()))
+    if city not in active_cities:
+        logger.info(f"[{city}] Ignorée (non sélectionnée dans les params)")
+        return
+
     try:
         logger.info(f"[{city}] Appel API Open-Meteo (lat={lat}, lon={lon})")
         response = requests.get(
@@ -46,6 +50,10 @@ def fetch_weather(city, lat, lon, **context):
 
 
 def process_weather(city, **context):
+    active_cities = context["params"].get("cities", list(CITIES.keys()))
+    if city not in active_cities:
+        return
+
     try:
         raw = context["ti"].xcom_pull(key=f"raw_{city}", task_ids=f"fetch_weather_{city}")
 
@@ -78,74 +86,94 @@ def process_weather(city, **context):
         raise
 
 
+def load_weather(city, **context):
+    active_cities = context["params"].get("cities", list(CITIES.keys()))
+    if city not in active_cities:
+        return
+
+    try:
+        data = context["ti"].xcom_pull(key=f"processed_{city}", task_ids=f"process_weather_{city}")
+
+        if data is None:
+            raise ValueError(f"[{city}] Aucune donnée à charger")
+
+        hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+        hook.run(
+            """
+            INSERT INTO weather_data (city, fetched_at, temperature_c, humidity_pct, wind_speed_kmh, weather_code)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            parameters=(
+                data["city"],
+                data["fetched_at"],
+                data["temperature_c"],
+                data["humidity_pct"],
+                data["wind_speed_kmh"],
+                data["weather_code"],
+            ),
+        )
+
+        logger.info(f"[{city}] Données insérées dans PostgreSQL")
+        context["ti"].xcom_push(key=f"loaded_{city}", value=True)
+    except Exception as e:
+        logger.error(f"[{city}] Erreur lors du chargement PostgreSQL : {e}")
+        raise
+
+
 def check_pipeline(**context):
-    failed = []
-    for city in CITIES:
-        row = context["ti"].xcom_pull(key=f"processed_{city}", task_ids=f"process_weather_{city}")
-        if row is None:
-            failed.append(city)
+    active_cities = context["params"].get("cities", list(CITIES.keys()))
+    failed = [
+        city for city in active_cities
+        if not context["ti"].xcom_pull(key=f"loaded_{city}", task_ids=f"load_weather_{city}")
+    ]
 
     if failed:
         logger.warning(f"Villes en échec : {failed}")
         return "alert_failures"
-    return "log_execution_success"
+    return "log_ingestion"
+
+
+def log_ingestion(**context):
+    active_cities = context["params"].get("cities", list(CITIES.keys()))
+    dag_run_id = context["dag_run"].run_id
+
+    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    hook.run(
+        "INSERT INTO ingestion_log (dag_run_id, cities_count, status) VALUES (%s, %s, %s)",
+        parameters=(dag_run_id, len(active_cities), "success"),
+    )
+    logger.info(f"[SUCCESS] {len(active_cities)} villes insérées. Run ID: {dag_run_id}")
 
 
 def alert_failures(**context):
-    failed = []
-    for city in CITIES:
-        row = context["ti"].xcom_pull(key=f"processed_{city}", task_ids=f"process_weather_{city}")
-        if row is None:
-            failed.append(city)
-    logger.error(f"[FAILURE] Pipeline terminé avec des erreurs sur : {failed}")
+    active_cities = context["params"].get("cities", list(CITIES.keys()))
+    failed = [
+        city for city in active_cities
+        if not context["ti"].xcom_pull(key=f"loaded_{city}", task_ids=f"load_weather_{city}")
+    ]
 
-
-def log_execution_success(**context):
-    logger.info(f"[SUCCESS] {len(CITIES)} cities ingested -> {OUTPUT_DIR}")
-    logger.info(f"Done. Fichier : {OUTPUT_DIR}/{datetime.now().strftime('%Y-%m-%d')}.json")
-
-
-def save_weather(**context):
-    try:
-        all_data = []
-        for city in CITIES:
-            row = context["ti"].xcom_pull(key=f"processed_{city}", task_ids=f"process_weather_{city}")
-            if row is None:
-                logger.warning(f"[{city}] Données manquantes, ville ignorée")
-                continue
-            all_data.append(row)
-
-        if not all_data:
-            raise ValueError("Aucune donnée à sauvegarder")
-
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        filename = f"{OUTPUT_DIR}/{datetime.now().strftime('%Y-%m-%d')}.json"
-
-        with open(filename, "w") as f:
-            json.dump(all_data, f, indent=2)
-
-        logger.info(f"{len(all_data)} ville(s) sauvegardées dans {filename}")
-        logger.info(json.dumps(all_data, indent=2))
-    except Exception as e:
-        logger.error(f"Erreur lors de la sauvegarde : {e}")
-        raise
+    dag_run_id = context["dag_run"].run_id
+    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    hook.run(
+        "INSERT INTO ingestion_log (dag_run_id, cities_count, status) VALUES (%s, %s, %s)",
+        parameters=(dag_run_id, len(active_cities) - len(failed), "partial_failure"),
+    )
+    logger.error(f"[FAILURE] Villes en échec : {failed}")
 
 
 with DAG(
     dag_id="weather_pipeline",
-    description="Fetch, traite et sauvegarde la météo de 3 villes via Open-Meteo",
+    description="Pipeline complet Open-Meteo → transformation → PostgreSQL",
     start_date=datetime(2024, 1, 1),
     schedule="@daily",
     catchup=False,
-    tags=["météo", "open-meteo"],
+    tags=["météo", "open-meteo", "postgresql"],
+    params={
+        "cities": ["paris", "tokyo", "new_york"],
+    },
 ) as dag:
 
     start = EmptyOperator(task_id="start_pipeline")
-
-    save_task = PythonOperator(
-        task_id="save_weather",
-        python_callable=save_weather,
-    )
 
     check = BranchPythonOperator(
         task_id="check_pipeline",
@@ -153,14 +181,14 @@ with DAG(
         trigger_rule="all_done",
     )
 
+    ingestion = PythonOperator(
+        task_id="log_ingestion",
+        python_callable=log_ingestion,
+    )
+
     alert = PythonOperator(
         task_id="alert_failures",
         python_callable=alert_failures,
-    )
-
-    success = PythonOperator(
-        task_id="log_execution_success",
-        python_callable=log_execution_success,
     )
 
     for city, coords in CITIES.items():
@@ -176,6 +204,12 @@ with DAG(
             op_kwargs={"city": city},
         )
 
-        start >> fetch_task >> process_task >> save_task
+        load_task = PythonOperator(
+            task_id=f"load_weather_{city}",
+            python_callable=load_weather,
+            op_kwargs={"city": city},
+        )
 
-    save_task >> check >> [alert, success]
+        start >> fetch_task >> process_task >> load_task >> check
+
+    check >> [ingestion, alert]

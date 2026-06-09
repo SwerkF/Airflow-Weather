@@ -7,18 +7,30 @@ Environnement Airflow local avec Docker Compose.
 - Docker
 - Docker Compose
 
-## Lancer l'environnement
+## Installation et lancement
 
+**1. Initialiser et démarrer Airflow**
 ```bash
-# Initialiser airflow
 docker compose up airflow-init
-
-# Démarrer airflow
 docker compose up -d
+```
 
-# Arrêter airflow
+**2. Créer les tables PostgreSQL** (à faire une seule fois)
+```bash
+docker compose exec -T postgres psql -U airflow -d airflow < scripts/init.sql
+```
+
+**3. Vérifier que tout tourne**
+```bash
+docker compose ps
+```
+
+**Arrêter l'environnement**
+```bash
 docker compose down
 ```
+
+> La connexion PostgreSQL (`postgres_weather`) est configurée automatiquement via le `.env`, pas besoin de la créer à la main.
 
 ## Accès
 
@@ -39,6 +51,13 @@ docker compose exec airflow-apiserver airflow dags list
 
 # Déclencher un DAG manuellement
 docker compose exec airflow-apiserver airflow dags trigger weather_pipeline
+
+# Déclencher avec des villes spécifiques
+docker compose exec airflow-apiserver airflow dags trigger weather_pipeline --conf '{"cities": ["paris", "tokyo"]}'
+
+# Vérifier les données insérées
+docker compose exec postgres psql -U airflow -d airflow -c "SELECT * FROM weather_data;"
+docker compose exec postgres psql -U airflow -d airflow -c "SELECT * FROM ingestion_log;"
 
 # Voir les logs d'un service
 docker compose logs -f airflow-scheduler
@@ -70,10 +89,10 @@ Pour ce TP j'ai utilisé l'API [Open-Meteo](https://open-meteo.com/) qui est gra
 
 - **`process_weather_{city}`**: extrait les champs qui m'intéressent (`temperature_c`, `humidity_pct`, `wind_speed_kmh`, `weather_code`, `fetched_at`) et vérifie qu'ils sont tous là. Si un champ est manquant la tâche échoue, ce qui évite de sauvegarder des données incomplètes.
 
-- **`save_weather`**: regroupe les données des 3 villes et les sauvegarde dans un fichier `/tmp/weather_pipeline/YYYY-MM-DD.json`. J'ai décidé de mettre un fichier pour plus de simplicité mais j'aurais pu mettre 3 fichiers différents pour chaque ville et classer par dossier (date/nom_ville).
+- **`load_weather_{city}`**: insère les données dans la table `weather_data` de PostgreSQL via `PostgresHook`. Une ligne par ville par exécution.
 
-- **`check_pipeline`**: regarde si toutes les villes ont bien été traitées et redirige vers le bon résultat.
+- **`check_pipeline`**: regarde si toutes les villes ont bien été chargées et redirige vers le bon résultat.
 
-- **`log_execution_success`**: log un message de succès avec le chemin du fichier produit. Permet de tracer les exécutions dans les logs Airflow.
+- **`log_ingestion`**: écrit une ligne dans la table `ingestion_log` avec le run ID, le nombre de villes et le statut `success`. Permet de tracer chaque exécution du pipeline.
 
-- **`alert_failures`**: log les villes qui ont échoué. Dans un vrai projet cette tâche enverrait une alerte par email ou Slack.
+- **`alert_failures`**: même chose mais avec le statut `partial_failure`, et log les villes qui ont échoué. Dans un vrai projet cette tâche enverrait une alerte par email ou Slack.

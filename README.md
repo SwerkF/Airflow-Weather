@@ -15,7 +15,7 @@ docker compose up airflow-init
 docker compose up -d
 ```
 
-**2. Créer les tables PostgreSQL** (à faire une seule fois)
+**2. Créer les tables PostgreSQL**
 ```bash
 docker compose exec -T postgres psql -U airflow -d airflow < scripts/init.sql
 ```
@@ -29,8 +29,6 @@ docker compose ps
 ```bash
 docker compose down
 ```
-
-> La connexion PostgreSQL (`postgres_weather`) est configurée automatiquement via le `.env`, pas besoin de la créer à la main.
 
 ## Accès
 
@@ -81,7 +79,7 @@ Ici, on voit que la météo a été traitée avec succès. Short et t-shirt et q
 
 Pour ce TP j'ai utilisé l'API [Open-Meteo](https://open-meteo.com/) qui est gratuite et ne nécessite pas de clé API. Les 3 villes choisies sont Paris, Tokyo et New York. Les tâches sont générées automatiquement pour chaque ville via une boucle sur le dictionnaire `CITIES`.
 
-![DAG Weather Pipeline](images/airflow_dag_tp3.png)
+![DAG Weather Pipeline](images/airflow_dag_tp4.png)
 
 - **`start_pipeline`**: tâche vide qui sert de point de départ. Ça permet d'avoir un DAG propre dans l'UI plutôt que 3 tâches qui partent de nulle part.
 
@@ -96,3 +94,9 @@ Pour ce TP j'ai utilisé l'API [Open-Meteo](https://open-meteo.com/) qui est gra
 - **`log_ingestion`**: écrit une ligne dans la table `ingestion_log` avec le run ID, le nombre de villes et le statut `success`. Permet de tracer chaque exécution du pipeline.
 
 - **`alert_failures`**: même chose mais avec le statut `partial_failure`, et log les villes qui ont échoué. Dans un vrai projet cette tâche enverrait une alerte par email ou Slack.
+
+## Base de données 
+
+![Base de données](images/bdd_airflow_tp4.png)
+
+Comme on peut le voir sur l'image au dessus, notre base de données contient bien les données des villes Paris, Tokyo et New York.

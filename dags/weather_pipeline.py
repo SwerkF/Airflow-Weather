@@ -17,6 +17,31 @@ CITIES = {
 }
 
 
+def create_tables(**context):
+    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    hook.run("""
+        CREATE TABLE IF NOT EXISTS weather_data (
+            id              SERIAL PRIMARY KEY,
+            city            VARCHAR(50)   NOT NULL,
+            fetched_at      TIMESTAMP     NOT NULL,
+            temperature_c   FLOAT,
+            humidity_pct    INT,
+            wind_speed_kmh  FLOAT,
+            weather_code    INT,
+            inserted_at     TIMESTAMP     DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS ingestion_log (
+            id            SERIAL PRIMARY KEY,
+            dag_run_id    VARCHAR(200),
+            cities_count  INT,
+            status        VARCHAR(20),
+            executed_at   TIMESTAMP DEFAULT NOW()
+        );
+    """)
+    logger.info("Tables créées ou déjà existantes")
+
+
 def fetch_weather(city, lat, lon, **context):
     active_cities = context["params"].get("cities", list(CITIES.keys()))
     if city not in active_cities:
@@ -174,6 +199,11 @@ with DAG(
 ) as dag:
 
     start = EmptyOperator(task_id="start_pipeline")
+
+    init_db = PythonOperator(
+        task_id="create_tables",
+        python_callable=create_tables,
+    )
 
     check = BranchPythonOperator(
         task_id="check_pipeline",

@@ -60,20 +60,20 @@ Ici, on voit que la météo a été traitée avec succès. Short et t-shirt et q
 
 ### Explication des tâches
 
-Le pipeline récupère la météo de 3 villes via l'API [Open-Meteo](https://open-meteo.com/) (gratuite, sans clé API) : **Paris, Tokyo, New York**. Les tâches sont créées automatiquement pour chaque ville grâce à une boucle sur le dictionnaire `CITIES`.
+Pour ce TP j'ai utilisé l'API [Open-Meteo](https://open-meteo.com/) qui est gratuite et ne nécessite pas de clé API. Les 3 villes choisies sont Paris, Tokyo et New York. Les tâches sont générées automatiquement pour chaque ville via une boucle sur le dictionnaire `CITIES`.
 
 ![DAG Weather Pipeline](images/airflow_dag_tp3.png)
 
-- **`start_pipeline`**: point d'entrée. Sans lui, les 3 fetch démarreraient sans lien visible entre eux dans l'UI Airflow.
+- **`start_pipeline`**: tâche vide qui sert de point de départ. Ça permet d'avoir un DAG propre dans l'UI plutôt que 3 tâches qui partent de nulle part.
 
-- **`fetch_weather_{city}`**: appelle l'API Open-Meteo et stocke le JSON brut dans XCom sans le modifier. Séparé du traitement pour pouvoir rejouer uniquement l'appel API en cas de panne, sans tout re-exécuter.
+- **`fetch_weather_{city}`**: récupère le JSON brut de l'API et le passe à la tâche suivante via XCom. Je ne touche pas aux données ici, c'est juste le fetch. Comme ça si l'API plante, je peux relancer uniquement cette tâche.
 
-- **`process_weather_{city}`**: extrait les champs utiles (`temperature_c`, `humidity_pct`, `wind_speed_kmh`, `weather_code`, `fetched_at`) et valide que tous sont présents. Si un champ manque, la tâche échoue plutôt que de laisser passer des données incomplètes.
+- **`process_weather_{city}`**: extrait les champs qui m'intéressent (`temperature_c`, `humidity_pct`, `wind_speed_kmh`, `weather_code`, `fetched_at`) et vérifie qu'ils sont tous là. Si un champ est manquant la tâche échoue, ce qui évite de sauvegarder des données incomplètes.
 
-- **`save_weather`**: Récupère les données traitées des 3 villes et les sauvegarde dans un fichier `/tmp/weather_pipeline/YYYY-MM-DD.json`. J'ai décidé de mettre un fichier pour plus de simplicité mais j'aurais pu mettre 3 fichiers différents pour chaque ville et classer par dossier (date/nom_ville)
+- **`save_weather`**: regroupe les données des 3 villes et les sauvegarde dans un fichier `/tmp/weather_pipeline/YYYY-MM-DD.json`. J'ai décidé de mettre un fichier pour plus de simplicité mais j'aurais pu mettre 3 fichiers différents pour chaque ville et classer par dossier (date/nom_ville).
 
-- **`check_pipeline`**: vérifie que toutes les villes ont bien été traitées.
+- **`check_pipeline`**: regarde si toutes les villes ont bien été traitées et redirige vers le bon résultat.
 
-- **`log_execution_success`**: log un message de succès avec le chemin du fichier produit. Permet de tracer les erreurs dans les logs Airflow.
+- **`log_execution_success`**: log un message de succès avec le chemin du fichier produit. Permet de tracer les exécutions dans les logs Airflow.
 
-- **`alert_failures`**: log les villes qui ont échoué. Dans un vrai projet, cette tâche enverrait une alerte (email, Slack…) pour notifier l'équipe.
+- **`alert_failures`**: log les villes qui ont échoué. Dans un vrai projet cette tâche enverrait une alerte par email ou Slack.
